@@ -1,15 +1,58 @@
-// src/App.js
-import React, { useState } from "react";
-import "./App.css";
+import React, { useState, useEffect } from "react";
+import './App.css';
+
 
 const API_BASE = process.env.REACT_APP_API_BASE || "http://127.0.0.1:5000";
 
+/* API Helper Functions */
+// Predict function to handle the main API call
+async function predict(features) {
+  try {
+    const response = await fetch(`${API_BASE}/predict`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ features })
+    });
+
+    const text = await response.text();
+    let json;
+    try {
+      json = JSON.parse(text);
+    } catch {
+      throw new Error(`Server returned non-JSON response: ${text}`);
+    }
+
+    if (!response.ok) {
+      throw new Error(json?.error || `Server error ${response.status}`);
+    }
+
+    return json;
+  } catch (err) {
+    console.error("Error calling API:", err);
+    return { error: err.message || "Network request failed" };
+  }
+}
+
+// Health check to verify the backend connection
+async function checkHealth() {
+  try {
+    const response = await fetch(`${API_BASE}/health`);
+    if (!response.ok) {
+      throw new Error("Health check failed");
+    }
+    return await response.json();
+  } catch (err) {
+    console.error("Error checking backend health:", err);
+    return { status: "error", error: "Backend not reachable" };
+  }
+}
+
 /* small choices */
 const FAT_CHOICES = ["Regular", "Low Fat", "Non-Edible"];
-const ITEM_TYPES = ["Baking Goods","Breads","Breakfast","Dairy","Soft Drinks","Meat","Fruits and Vegetables","Snack Foods","Household","Health and Hygiene","Others"];
-const OUTLET_SIZES = ["Small","Medium","High"];
-const OUTLET_LOCATIONS = ["Tier 1","Tier 2","Tier 3"];
-const OUTLET_TYPES = ["Grocery Store","Supermarket Type1","Supermarket Type2","Supermarket Type3"];
+const ITEM_TYPES = ["Baking Goods", "Breads", "Breakfast", "Dairy", "Soft Drinks", "Meat", "Fruits and Vegetables", "Snack Foods", "Household", "Health and Hygiene", "Others"];
+const OUTLET_SIZES = ["Small", "Medium", "High"];
+const OUTLET_LOCATIONS = ["Tier 1", "Tier 2", "Tier 3"];
+const OUTLET_TYPES = ["Grocery Store", "Supermarket Type1", "Supermarket Type2", "Supermarket Type3"];
 
 const PRESETS = [
   {
@@ -82,23 +125,63 @@ function formatNumber(n, digits = 2) {
   return Number(n).toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits });
 }
 
-export default function App() {
-  const [features, setFeatures] = useState(PRESETS[0].features);
+function useApi() {
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
-  function onChange(e) {
-    const name = e.target.name;
-    let value = e.target.value;
-    const numericKeys = [
-      "Item_Weight","Item_Visibility","Item_MRP","Outlet_Establishment_Year",
-      "Outlet_Age","avg_sales_by_item","avg_sales_by_outlet_item","item_category_aggregates","is_perishable"
-    ];
-    if (numericKeys.includes(name)) {
-      value = value === "" ? null : Number(value);
+  const callPredict = async (features) => {
+    setLoading(true);
+    setError(null);
+    setResult(null);
+
+    try {
+      const json = await predict(features);
+      if (json && json.error) {
+        throw new Error(json.error);
+      }
+      setResult(Array.isArray(json) ? json[0] : json);
+      // Simple confetti effect
+      if (window.confetti && typeof window.confetti === "function") {
+        window.confetti();
+      }
+    } catch (err) {
+      setError(err.message || "An unknown error occurred.");
+    } finally {
+      setLoading(false);
     }
-    setFeatures(prev => ({ ...prev, [name]: value }));
+  };
+
+  return { result, loading, error, callPredict, setResult, setError };
+}
+
+export default function App() {
+  const [features, setFeatures] = useState(PRESETS[0].features);
+  const { result, loading, error, callPredict, setResult, setError } = useApi();
+  const [backendHealth, setBackendHealth] = useState("Checking...");
+
+  useEffect(() => {
+    // Check backend health on component mount
+    checkHealth().then(res => {
+      if (res.status === "ok") {
+        setBackendHealth("Connected");
+      } else {
+        setBackendHealth("Disconnected");
+      }
+    });
+  }, []);
+
+  function onChange(e) {
+    const { name, value } = e.target;
+    const numericKeys = [
+      "Item_Weight", "Item_Visibility", "Item_MRP", "Outlet_Establishment_Year",
+      "Outlet_Age", "avg_sales_by_item", "avg_sales_by_outlet_item", "item_category_aggregates", "is_perishable"
+    ];
+    let parsedValue = value;
+    if (numericKeys.includes(name)) {
+      parsedValue = value === "" ? null : Number(value);
+    }
+    setFeatures(prev => ({ ...prev, [name]: parsedValue }));
   }
 
   function applyPreset(preset) {
@@ -113,39 +196,13 @@ export default function App() {
     return null;
   }
 
-  async function predict() {
-    setError(null);
-    setResult(null);
+  function handlePredict() {
     const v = validate(features);
     if (v) {
       setError(v);
       return;
     }
-
-    setLoading(true);
-    try {
-      const resp = await fetch(`${API_BASE}/predict`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ features })
-      });
-
-      const text = await resp.text();
-      let json;
-      try { json = JSON.parse(text); } catch { throw new Error("Server returned non-JSON response: " + text); }
-      if (!resp.ok) throw new Error(json?.error || `Server error ${resp.status}`);
-      setResult(Array.isArray(json) ? json[0] : json);
-      // small confetti effect (basic)
-      try {
-        if (window.confetti && typeof window.confetti === "function") {
-          window.confetti();
-        }
-      } catch {}
-    } catch (err) {
-      setError(String(err.message || err));
-    } finally {
-      setLoading(false);
-    }
+    callPredict(features);
   }
 
   function copyResult() {
@@ -154,13 +211,12 @@ export default function App() {
   }
 
   return (
-    
     <div className="app-root colorful">
       <div className="hero-section">
-          <div className="hero-text-container">
-            <h1>Dynamic Price Services</h1>
-            <p>Empowering businesses with data-driven pricing strategies for optimal revenue.</p>
-          </div>
+        <div className="hero-text-container">
+          <h1>Dynamic Price Services</h1>
+          <p>Empowering businesses with data-driven pricing strategies for optimal revenue.</p>
+        </div>
       </div>
 
       <header className="hero">
@@ -171,7 +227,7 @@ export default function App() {
             <div className="hero-badges">
               <span className="badge">Realtime</span>
               <span className="badge green">Model v1</span>
-              <span className="badge">Alpha {formatNumber(0.05,2)}</span>
+              <span className="badge">Alpha {formatNumber(0.05, 2)}</span>
             </div>
           </div>
           <div className="hero-image" role="img" aria-label="pricing hero" />
@@ -191,27 +247,27 @@ export default function App() {
             </div>
 
             <div className="grid">
-              <div className="field"><label>Item Identifier</label><input name="Item_Identifier" value={features.Item_Identifier || ""} onChange={onChange}/></div>
-              <div className="field"><label>Item Weight</label><input name="Item_Weight" value={features.Item_Weight ?? ""} onChange={onChange}/></div>
+              <div className="field"><label>Item Identifier</label><input name="Item_Identifier" value={features.Item_Identifier || ""} onChange={onChange} /></div>
+              <div className="field"><label>Item Weight</label><input name="Item_Weight" value={features.Item_Weight ?? ""} onChange={onChange} /></div>
 
               <div className="field"><label>Item Fat Content</label><select name="Item_Fat_Content" value={features.Item_Fat_Content} onChange={onChange}>{FAT_CHOICES.map(x => <option key={x} value={x}>{x}</option>)}</select></div>
-              <div className="field"><label>Item Visibility</label><input name="Item_Visibility" value={features.Item_Visibility ?? ""} onChange={onChange}/></div>
+              <div className="field"><label>Item Visibility</label><input name="Item_Visibility" value={features.Item_Visibility ?? ""} onChange={onChange} /></div>
 
               <div className="field"><label>Item Type</label><select name="Item_Type" value={features.Item_Type} onChange={onChange}>{ITEM_TYPES.map(x => <option key={x} value={x}>{x}</option>)}</select></div>
-              <div className="field"><label>Item MRP</label><input name="Item_MRP" value={features.Item_MRP ?? ""} onChange={onChange}/></div>
+              <div className="field"><label>Item MRP</label><input name="Item_MRP" value={features.Item_MRP ?? ""} onChange={onChange} /></div>
 
-              <div className="field"><label>Outlet Year</label><input name="Outlet_Establishment_Year" value={features.Outlet_Establishment_Year ?? ""} onChange={onChange}/></div>
+              <div className="field"><label>Outlet Year</label><input name="Outlet_Establishment_Year" value={features.Outlet_Establishment_Year ?? ""} onChange={onChange} /></div>
               <div className="field"><label>Outlet Size</label><select name="Outlet_Size" value={features.Outlet_Size} onChange={onChange}>{OUTLET_SIZES.map(x => <option key={x} value={x}>{x}</option>)}</select></div>
 
               <div className="field"><label>Outlet Location</label><select name="Outlet_Location_Type" value={features.Outlet_Location_Type} onChange={onChange}>{OUTLET_LOCATIONS.map(x => <option key={x} value={x}>{x}</option>)}</select></div>
               <div className="field"><label>Outlet Type</label><select name="Outlet_Type" value={features.Outlet_Type} onChange={onChange}>{OUTLET_TYPES.map(x => <option key={x} value={x}>{x}</option>)}</select></div>
 
-              <div className="field"><label>Outlet Age</label><input name="Outlet_Age" value={features.Outlet_Age ?? ""} onChange={onChange}/></div>
-              <div className="field"><label>Is Perishable (0/1)</label><input name="is_perishable" value={features.is_perishable ?? ""} onChange={onChange}/></div>
+              <div className="field"><label>Outlet Age</label><input name="Outlet_Age" value={features.Outlet_Age ?? ""} onChange={onChange} /></div>
+              <div className="field"><label>Is Perishable (0/1)</label><input name="is_perishable" value={features.is_perishable ?? ""} onChange={onChange} /></div>
             </div>
 
             <div className="actions-row">
-              <button className="btn primary" onClick={predict} disabled={loading}>{loading ? "Predicting..." : "Predict"}</button>
+              <button className="btn primary" onClick={handlePredict} disabled={loading}>{loading ? "Predicting..." : "Predict"}</button>
               <div className="muted small">{error ? <span className="error">Error: {error}</span> : "Fill inputs and predict"}</div>
             </div>
           </div>
@@ -251,8 +307,9 @@ export default function App() {
       </main>
 
       <footer className="site-footer">
-        <small>API: {API_BASE} • Local demo</small>
+        <small>API Base URL: {API_BASE} • Backend Status: <span className={backendHealth === 'Connected' ? 'connected' : 'disconnected'}>{backendHealth}</span></small>
       </footer>
+
     </div>
   );
 }
